@@ -1,0 +1,13 @@
+,0
+total_students,100000.0
+distinct_universities,1000.0
+mean_rank,9.32254
+median_rank,5.0
+std_rank,10.039586439757308
+top1_pct,0.27164
+top2_pct,0.37556
+top5_pct,0.5308
+top10_pct,0.66791
+top20_pct,0.83687
+top50_pct,1.0
+overall_mean_satisfaction,0.8335492000000001
