@@ -177,7 +177,7 @@ def evaluate_assignment(
     return total
 
 
-def solve_with_ortools(structure: Dict, cost_scale: int = 1_000_000_000_000_000) -> Dict:
+def solve_with_ortools(structure: Dict, cost_scale: int = 1_000_000_000) -> Dict:
     """Solve the assignment using OR-Tools min-cost flow, minimizing dissatisfaction."""
     from ortools.graph.python import min_cost_flow
 
