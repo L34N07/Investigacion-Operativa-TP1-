@@ -17,6 +17,10 @@ StudentId = str
 UniversityId = str
 
 COST_SCALE = 1_000_000_000
+TIE_BREAK_COST_SCALE = 1_000_000
+
+PREFERENCE_POSITIVE_LIMIT = 20
+PREFERENCE_FLOOR = -10.0
 
 STATUS_MAP = {
     0: "OPTIMAL",
@@ -29,6 +33,47 @@ STATUS_MAP = {
     7: "BAD_INPUT",
     8: "MAX_FLOW_TOO_SMALL",
 }
+
+
+def preference_term(rank: Optional[int]) -> float:
+    """Return the preference contribution for a given rank with aggressive decay."""
+    if rank is None:
+        return PREFERENCE_FLOOR
+    score = (PREFERENCE_POSITIVE_LIMIT + 1 - rank) / PREFERENCE_POSITIVE_LIMIT
+    score = max(score, PREFERENCE_FLOOR)
+    return min(score, 1.0)
+
+
+def rebuild_objective(structure: Dict) -> None:
+    """Recompute objective coefficients using the aggressive preference curve."""
+    if "base_objective" not in structure:
+        structure["base_objective"] = dict(structure["objective"])
+
+    student_ids = list(structure["student_ids"])
+    options_by_student = structure["options_by_student"]
+    preference_positions = structure["preference_positions"]
+    fairness_values = structure["fairness_values"]
+    capacity_by_university = structure["capacity_by_university"]
+    alpha = structure["alpha"]
+
+    num_students = len(student_ids)
+    num_universities = len(capacity_by_university)
+
+    new_objective: Dict = {}
+    for sid in student_ids:
+        fairness = fairness_values[sid]
+        options = options_by_student.get(sid, [])
+        pref_ranks = preference_positions.get(sid, {})
+        for uid in options:
+            fe_term = preference_term(pref_ranks.get(uid))
+            fu_term = fairness
+            coeff = (
+                (alpha / num_students) * fe_term
+                + ((1 - alpha) / (num_universities * capacity_by_university[uid])) * fu_term
+            )
+            new_objective[(sid, uid)] = float(coeff)
+
+    structure["objective"] = new_objective
 
 
 def parse_pref_limit(raw: Optional[str]) -> Optional[int]:
@@ -58,12 +103,15 @@ def solve_min_cost_flow(structure: Dict, cost_scale: int = COST_SCALE) -> Dict:
     """Solve the assignment using OR-Tools min-cost flow."""
     from ortools.graph.python import min_cost_flow
 
+    rebuild_objective(structure)
+
     student_ids = list(structure["student_ids"])
     options_by_student = {
         sid: list(structure["options_by_student"].get(sid, [])) for sid in student_ids
     }
     capacity_by_university = dict(structure["capacity_by_university"])
-    objective_terms = dict(structure["objective"])
+    base_objective_terms = dict(structure.get("base_objective", {}))
+    aggressive_terms = dict(structure["objective"])
     preference_positions = {
         sid: dict(structure["preference_positions"].get(sid, {})) for sid in student_ids
     }
@@ -93,17 +141,18 @@ def solve_min_cost_flow(structure: Dict, cost_scale: int = COST_SCALE) -> Dict:
     num_students_total = len(fairness_values)
     num_universities_total = len(capacity_by_university)
 
+    # Ensure aggressive objective has entries for dummy arcs used in tie-breaker.
     for sid in student_ids:
         key = (sid, dummy_uid)
-        if key not in objective_terms:
-            fe_term = (51 - dummy_rank) / 50.0
+        if key not in aggressive_terms:
+            fe_term = preference_term(dummy_rank)
             fu_term = fairness_values[sid]
             coeff = (
                 (alpha / num_students_total) * fe_term
                 + ((1 - alpha) / (num_universities_total * capacity_by_university[dummy_uid]))
                 * fu_term
             )
-            objective_terms[key] = float(coeff)
+            aggressive_terms[key] = float(coeff)
 
     start_time = time.perf_counter()
     mcf = min_cost_flow.SimpleMinCostFlow()
@@ -125,23 +174,51 @@ def solve_min_cost_flow(structure: Dict, cost_scale: int = COST_SCALE) -> Dict:
     for sid in student_ids:
         mcf.add_arc_with_capacity_and_unit_cost(source, student_nodes[sid], 1, 0)
 
-    student_university_arcs = []
+    arc_specs = []
+    max_secondary_cost = 0
+
     for sid in student_ids:
-        s_node = student_nodes[sid]
         for uid in options_by_student[sid]:
-            coeff = objective_terms.get((sid, uid))
-            if coeff is None:
-                pref_rank = preference_positions.get(sid, {}).get(uid)
+            key = (sid, uid)
+            pref_rank = preference_positions.get(sid, {}).get(uid)
+
+            base_coeff = base_objective_terms.get(key)
+            if base_coeff is None:
                 fe_term = (51 - pref_rank) / 50.0 if pref_rank is not None else -2.0
                 fu_term = fairness_values[sid]
-                coeff = (
+                base_coeff = (
                     (alpha / num_students_total) * fe_term
                     + ((1 - alpha) / (num_universities_total * capacity_by_university[uid]))
                     * fu_term
                 )
-            cost = int(round(-coeff * cost_scale))
-            arc = mcf.add_arc_with_capacity_and_unit_cost(s_node, university_nodes[uid], 1, cost)
-            student_university_arcs.append((arc, sid, uid))
+                base_objective_terms[key] = float(base_coeff)
+
+            tie_coeff = aggressive_terms.get(key)
+            if tie_coeff is None:
+                fe_term = preference_term(pref_rank)
+                fu_term = fairness_values[sid]
+                tie_coeff = (
+                    (alpha / num_students_total) * fe_term
+                    + ((1 - alpha) / (num_universities_total * capacity_by_university[uid]))
+                    * fu_term
+                )
+                aggressive_terms[key] = float(tie_coeff)
+
+            primary_cost = int(round(-base_coeff * cost_scale))
+            secondary_cost = int(round(-tie_coeff * TIE_BREAK_COST_SCALE))
+            max_secondary_cost = max(max_secondary_cost, abs(secondary_cost))
+            arc_specs.append((sid, uid, primary_cost, secondary_cost))
+
+    lexico_shift = max_secondary_cost + 1 if max_secondary_cost >= 0 else 1
+
+    student_university_arcs = []
+    for sid, uid, primary_cost, secondary_cost in arc_specs:
+        s_node = student_nodes[sid]
+        combined_cost = primary_cost * lexico_shift + secondary_cost
+        arc = mcf.add_arc_with_capacity_and_unit_cost(
+            s_node, university_nodes[uid], 1, combined_cost
+        )
+        student_university_arcs.append((arc, sid, uid))
 
     for uid, cap in capacity_by_university.items():
         mcf.add_arc_with_capacity_and_unit_cost(university_nodes[uid], sink, int(cap), 0)
@@ -164,9 +241,11 @@ def solve_min_cost_flow(structure: Dict, cost_scale: int = COST_SCALE) -> Dict:
             "status": status,
             "status_name": status_name,
             "optimal_cost": None,
-            "objective_value": None,
-            "objective_exact": None,
+            "base_objective_exact": None,
+            "tie_break_objective_exact": None,
             "cost_scale": cost_scale,
+            "tie_break_cost_scale": TIE_BREAK_COST_SCALE,
+            "lexico_shift": lexico_shift,
             "dummy_assignments": None,
             "complete": False,
             "stats": None,
@@ -179,12 +258,19 @@ def solve_min_cost_flow(structure: Dict, cost_scale: int = COST_SCALE) -> Dict:
 
     complete = len(assignment) == num_students
     optimal_cost = mcf.optimal_cost()
-    objective_value = -optimal_cost / cost_scale
     dummy_assignments = sum(1 for uid in assignment.values() if uid == dummy_uid)
 
-    objective_exact = evaluate_assignment(
+    base_objective_exact = evaluate_assignment(
         assignment,
-        objective_terms,
+        base_objective_terms,
+        preference_positions,
+        fairness_values,
+        capacity_by_university,
+        alpha,
+    )
+    tie_break_objective_exact = evaluate_assignment(
+        assignment,
+        aggressive_terms,
         preference_positions,
         fairness_values,
         capacity_by_university,
@@ -198,9 +284,11 @@ def solve_min_cost_flow(structure: Dict, cost_scale: int = COST_SCALE) -> Dict:
         "status": status,
         "status_name": status_name,
         "optimal_cost": optimal_cost,
-        "objective_value": objective_value,
-        "objective_exact": objective_exact,
+        "base_objective_exact": base_objective_exact,
+        "tie_break_objective_exact": tie_break_objective_exact,
         "cost_scale": cost_scale,
+        "tie_break_cost_scale": TIE_BREAK_COST_SCALE,
+        "lexico_shift": lexico_shift,
         "dummy_assignments": dummy_assignments,
         "complete": complete,
         "stats": stats,
@@ -216,7 +304,12 @@ def render_summary(structure: Dict, result: Dict, pref_limit: Optional[int], loa
         f"Loaded {students} students and {universities} universities "
         f"(pref_limit={pref_label}) in {load_time:.2f}s."
     )
-    print(f"Alpha: {structure['alpha']:.4f}  |  Cost scale: {result['cost_scale']:,}")
+    print(
+        f"Alpha: {structure['alpha']:.4f}  |  Cost scale: {result['cost_scale']:,}  |  "
+        f"Tie-break scale: {result.get('tie_break_cost_scale', TIE_BREAK_COST_SCALE):,}"
+    )
+    if result.get("lexico_shift") is not None:
+        print(f"Lexicographic shift: {result['lexico_shift']}")
 
     status_line = f"Min-cost flow status: {result['status_name']} ({result['status']})"
     print(status_line)
@@ -226,9 +319,20 @@ def render_summary(structure: Dict, result: Dict, pref_limit: Optional[int], loa
         print("Solver did not produce an assignment; see status above.")
         return False
 
+    base_value = result.get("base_objective_exact")
+    if base_value is not None:
+        print(f"Base objective value: {base_value:.6f}")
+    else:
+        print("Base objective value: n/a")
+
+    tie_value = result.get("tie_break_objective_exact")
+    if tie_value is not None:
+        print(f"Tie-break objective value: {tie_value:.6f}")
+
+    print(f"Combined optimal cost (lexicographic): {result['optimal_cost']}")
     print(
-        f"Optimal cost: {result['optimal_cost']}  |  Normalized objective: {result['objective_value']:.6f} "
-        f"(recomputed: {result['objective_exact']:.6f})"
+        f"Tie-break preference curve: positive through rank {PREFERENCE_POSITIVE_LIMIT}, "
+        f"floor {PREFERENCE_FLOOR:.1f}."
     )
     stats = result.get("stats") or {}
     within_limit_ratio = stats.get("within_limit_ratio", 0.0)
