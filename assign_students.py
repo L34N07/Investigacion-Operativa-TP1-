@@ -26,7 +26,7 @@ def load_assignment_data(
     Dict[StudentId, float],
     Dict[UniversityId, int],
 ]:
-    """Load raw CSV inputs and return normalized structures limited to top preferences."""
+    
 
     merit = pd.read_csv(merit_csv, dtype={"student_id": str})
     students = pd.read_csv(students_csv, dtype={"student_id": str})
@@ -68,7 +68,7 @@ def load_assignment_data(
             try:
                 uni_id = str(int(raw_value))
             except ValueError:
-                # Skip entries that cannot be coerced to integer identifiers.
+
                 continue
             if uni_id not in capacities or uni_id in seen:
                 continue
@@ -84,7 +84,7 @@ def load_assignment_data(
                     seen.add(uni_id)
                     options.append(uni_id)
         if not options:
-            # Graceful fallback: allow this student to consider any university.
+
             options = list(capacities.keys())
             for idx, uni_id in enumerate(options, start=1):
                 ranking[uni_id] = idx
@@ -119,7 +119,7 @@ def define_assignment_structure(
     capacity_by_university: Dict[UniversityId, int],
     alpha: float,
 ) -> Dict:
-    """Build objective coefficients and reusable metadata for the solver."""
+    
 
     num_students = len(student_ids)
     num_universities = len(capacity_by_university)
@@ -157,7 +157,7 @@ def evaluate_assignment(
     capacity_by_university: Dict[UniversityId, int],
     alpha: float,
 ) -> float:
-    """Evaluate the composite objective value for a complete assignment."""
+    
     num_students = len(fairness_values)
     num_universities = len(capacity_by_university)
     total = 0.0
@@ -178,7 +178,7 @@ def evaluate_assignment(
 
 
 def solve_with_ortools(structure: Dict, cost_scale: int = 1_000_000_000) -> Dict:
-    """Solve the assignment using OR-Tools min-cost flow, minimizing dissatisfaction."""
+    
     from ortools.graph.python import min_cost_flow
 
     student_ids = structure["student_ids"]
@@ -311,7 +311,7 @@ def compute_assignment_stats(
     preference_positions: Dict[StudentId, Dict[UniversityId, int]],
     pref_limit: Optional[int],
 ) -> Dict[str, float]:
-    """Compute summary statistics for the resulting assignment."""
+    
     ranks: List[int] = []
     within_limit = 0
     unassigned = 0
@@ -343,7 +343,7 @@ def define_assignment_structure_from_csv(
     pref_limit: Optional[int] = 15,
     alpha: float = 0.5,
 ) -> Dict:
-    """Convenience wrapper for loading CSV inputs and building the structure."""
+    
     (
         student_ids,
         options_by_student,

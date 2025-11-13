@@ -1,5 +1,61 @@
 ## Version en Espanol
 
+### Integrantes
+
+- Leandro Zarate
+
+### Proceso de experimentación y búsqueda del puntaje final
+
+Para llegar al puntaje final de **0.702625**, seguí un proceso bastante iterativo:
+
+1. **Asignación aleatoria con capacidad**  
+   Empecé con una solución base muy simple: asignar cada estudiante a una universidad aleatoria, respetando únicamente la capacidad `u_cap` de cada universidad. Esto servía como base para entender el orden de magnitud del score y tener algo con qué comparar los siguientes intentos.
+
+2. **Método greedy por mérito + preferencias**  
+   El siguiente paso fue un enfoque codicioso: ordenar a los estudiantes por su `merit_rank` (del mejor al peor) y, para cada uno, asignarlo a la mejor universidad disponible dentro de sus preferencias, siempre cuidando de no romper las capacidades.  
+   Este enfoque mejoró los resultados, pero se quedó lejos del puntaje final y quedó como una primera heurística relativamente sencilla.
+
+3. **Búsqueda local aleatoria sobre la solución greedy**  
+   Después probé usar la solución greedy como **seed** e hice una especie de búsqueda local: tomaba esa asignación y aplicaba pequeños cambios con algo de aleatoriedad, buscando mejorar el score.  
+   Corrí del orden de **80 iteraciones** con variaciones de este esquema y no logré encontrar ninguna solución que mejorara realmente el mejor resultado que tenía hasta ese momento.
+
+4. **Script local para calcular la felicidad (score)**  
+   Como llegué al límite de envíos de la competencia, necesitaba seguir experimentando sin depender del scoreboard del sitio. Por eso armé un script local que replica la función de “happiness” de la competencia y calcula el **score directamente desde los CSV**.  
+   A partir de ese momento, pude iterar rápido: generar una asignación → calcular el score localmente → decidir si valía la pena refinar esa idea.
+
+5. **Descubrimiento del solver de Min-Cost Flow (MCF)**  
+   Después de más de **12 horas de investigación** (documentación, ejemplos, issues, etc.) encontré que un modelo de **min-cost flow (MCF)** encajaba muy bien con el problema de asignación estudiante–universidad.  
+   Implementé la idea con OR-Tools, armando la red de flujo donde cada estudiante tiene una unidad de flujo y cada universidad tiene capacidad limitada.
+
+6. **Primer experimento con MCF limitado a 15 preferencias**  
+   Como no sabía cuánto tiempo podía tardar el solver en correr con todas las preferencias, primero acoté a **15 preferencias por estudiante** (`pref_limit = 15`), esperando que así terminara en menos de 3 horas.  
+   El solver en realidad tardó solo **2–3 minutos**, pero al estar limitado a 15 preferencias, algunos estudiantes no pudieron ser asignados correctamente dentro de sus opciones y terminaron cayendo en valores "dummy"/fallback. Eso hizo que mi envío obtuviera un **score de -1** en la competencia (básicamente, un resultado inválido).
+
+7. **MCF con las 50 preferencias: gran salto de performance**  
+   Como el tiempo de corrida era razonable, volví a correr el modelo pero esta vez con **las 50 preferencias**.  
+   El resultado fue un salto grande en performance: pasé de un score anterior de **0.59135** a aproximadamente **0.68772**, usando la estructura de MCF.
+
+8. **Escalado entero de costos para evitar empates**  
+   Leyendo más sobre solvers y puntos flotantes, encontré que trabajar con valores `float` grandes puede introducir redondeos, cortes y empates no deseados en los costos.  
+   Para reducir el impacto de esos problemas, empecé a **multiplicar todos los costos de arcos por una constante entera** (`cost_scale`) dentro del solver.  
+   - Fui aumentando esta constante gradualmente.  
+   - Cada vez que la hacía más grande, el solver encontraba pequeñas mejoras en el score, porque se reducían los empates y el modelo diferenciaba mejor entre soluciones.  
+   - Llegó un punto en el que seguir aumentando la constante ya no cambiaba para nada el resultado: ahí el score se estabilizó alrededor de **0.702625**.
+
+9. **Análisis adicionales y pruebas “más agresivas” con preferencias**  
+   A partir de ese resultado empecé a analizar distintos CSV adicionales (incluidos en la carpeta del proyecto) para entender la distribución de los rankings asignados, promedios de preferencia, etc.  
+   También probé hacer el modelo más agresivo en cuanto a las preferencias (por ejemplo, penalizando mucho más estar lejos del top de opciones) para intentar bajar aún más el **average assigned preference rank**.  
+   Curiosamente, en algunos casos el promedio de ranking mejoraba, pero el **score total** bajaba; por lo tanto, esas variantes no fueron útiles para el objetivo de la competencia y las descarté.
+
+10. **Intento con el solver lineal (Programación Lineal)**  
+    Recién después de todo lo anterior probé por primera vez el **solver lineal** de OR-Tools (el que en principio era el enfoque “oficial” sugerido).  
+    El modelo lineal me devolvió un **score de ~0.70254** con estado de solución “OPTIMAL” reportado por el solver, pero yo ya sabía que existía una solución mejor (la de **0.702625** obtenida con MCF), por lo que ese “óptimo” era en realidad relativo al modelo/formulación lineal que estaba usando.  
+    Probé varias variantes de la formulación lineal, pero ninguna pudo superar el 0.70262.
+
+11. **Resultado final**  
+    Después de todas estas iteraciones, el mejor puntaje estable que conseguí fue **0.702625**, y ese es el valor que tomé como **score final** del trabajo.
+
+---
 
 
 `mcf_solver.py` es el script principal que resuelve la asignacion estudiante-universidad con min-cost flow de OR-Tools. Lee los CSV, recompone el objetivo, ejecuta el solver con costos lexicograficos y muestra estadisticas de la asignacion.
@@ -20,6 +76,8 @@
 - `universities.csv`: columnas `university_id` y `cap`.
 
 ### Ejecucion de `mcf_solver.py`
+
+~ 40s a 8m dependiendo de la cantidad de preferencias (nolimit ~ 8m)
 
 ```bash
 python mcf_solver.py 

@@ -36,7 +36,7 @@ STATUS_MAP = {
 
 
 def preference_term(rank: Optional[int]) -> float:
-    """Return the preference contribution for a given rank with aggressive decay."""
+    
     if rank is None:
         return PREFERENCE_FLOOR
     score = (PREFERENCE_POSITIVE_LIMIT + 1 - rank) / PREFERENCE_POSITIVE_LIMIT
@@ -45,7 +45,7 @@ def preference_term(rank: Optional[int]) -> float:
 
 
 def rebuild_objective(structure: Dict) -> None:
-    """Recompute objective coefficients using the aggressive preference curve."""
+    
     if "base_objective" not in structure:
         structure["base_objective"] = dict(structure["objective"])
 
@@ -77,7 +77,7 @@ def rebuild_objective(structure: Dict) -> None:
 
 
 def parse_pref_limit(raw: Optional[str]) -> Optional[int]:
-    """Interpret preference limit CLI argument."""
+    
     if raw is None:
         return None
     if isinstance(raw, int):
@@ -100,7 +100,7 @@ def parse_pref_limit(raw: Optional[str]) -> Optional[int]:
 
 
 def solve_min_cost_flow(structure: Dict, cost_scale: int = COST_SCALE) -> Dict:
-    """Solve the assignment using OR-Tools min-cost flow."""
+    
     from ortools.graph.python import min_cost_flow
 
     rebuild_objective(structure)
@@ -141,7 +141,7 @@ def solve_min_cost_flow(structure: Dict, cost_scale: int = COST_SCALE) -> Dict:
     num_students_total = len(fairness_values)
     num_universities_total = len(capacity_by_university)
 
-    # Ensure aggressive objective has entries for dummy arcs used in tie-breaker.
+
     for sid in student_ids:
         key = (sid, dummy_uid)
         if key not in aggressive_terms:
@@ -296,7 +296,7 @@ def solve_min_cost_flow(structure: Dict, cost_scale: int = COST_SCALE) -> Dict:
 
 
 def render_summary(structure: Dict, result: Dict, pref_limit: Optional[int], load_time: float) -> bool:
-    """Print a terse but information-rich summary of the run."""
+    
     students = len(structure["student_ids"])
     universities = len(structure["capacity_by_university"])
     pref_label = "no limit" if pref_limit is None else pref_limit
@@ -357,7 +357,7 @@ def render_summary(structure: Dict, result: Dict, pref_limit: Optional[int], loa
 
 
 def write_assignment_csv(path: str, student_ids: Sequence[StudentId], assignment: Dict[StudentId, UniversityId]) -> Path:
-    """Write the assignment to CSV preserving student order."""
+    
     out_path = Path(path)
     df = pd.DataFrame(
         {
